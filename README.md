@@ -3,10 +3,6 @@
 ## Overview
 The Smart Reminder System is a Python program that helps you, in this case keep track of your vehicle's important dates such as insurance and pollution expiry. It uses a Google Sheet as a database to store the vehicle details and other important dates and sends reminders through WhatsApp using Twilio API. You can easily modify the program to use other messaging platforms such as Telegram or SMS.
 
-![Google Sheet Structure](./img/gsheet.PNG)
-
-![WhatsApp Message Example](./img/whtsapp.PNG)
-
 ## Prerequisites
 Before running the program, you need to have the following:
 - A Google account
@@ -21,10 +17,16 @@ Before running the program, you need to have the following:
 4. Update the `config.py` file with your Twilio account details and other configuration options.
 5. Inside the main.py you can run the smart_reminder function with all the necessary parameters to run the program.
 
+
+![Google Sheet Structure](./img/gsheet.PNG)
+
 ## Usage
 1. Add your vehicle details to the Google Sheet with the correct column headers: Name, Vehicle_No, Insurance_Due, Pollution. You can add more rows as needed.
 2. Run the program to check for any upcoming deadlines. The program will send reminders for any deadlines that are within 7 days.
 3. Receive the reminders on your WhatsApp number and take necessary actions.
+
+
+![WhatsApp Message Example](./img/whtsapp.PNG)
 
 ## Customization
 You can customize the program to suit your needs by modifying the following:
