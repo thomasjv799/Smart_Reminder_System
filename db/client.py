@@ -152,6 +152,54 @@ def log_reminder(
             })
 
 
+def is_snoozed(vehicle_id: int, expiry_field: str) -> bool:
+    sql = """
+        SELECT 1 FROM reminder_snooze
+        WHERE vehicle_id = %(vid)s
+          AND expiry_field = %(field)s
+          AND (snoozed_until IS NULL OR snoozed_until >= CURRENT_DATE)
+    """
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"vid": vehicle_id, "field": expiry_field})
+            return cur.fetchone() is not None
+
+
+def snooze_reminder(
+    vehicle_id: int,
+    expiry_field: str,
+    snoozed_until,   # date | None
+    reason: str,
+    created_by: str,
+) -> None:
+    sql = """
+        INSERT INTO reminder_snooze
+            (vehicle_id, expiry_field, snoozed_until, reason, created_by)
+        VALUES (%(vid)s, %(field)s, %(until)s, %(reason)s, %(by)s)
+        ON CONFLICT (vehicle_id, expiry_field) DO UPDATE
+            SET snoozed_until = EXCLUDED.snoozed_until,
+                reason        = EXCLUDED.reason,
+                created_by    = EXCLUDED.created_by,
+                created_at    = now()
+    """
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {
+                "vid": vehicle_id, "field": expiry_field,
+                "until": snoozed_until, "reason": reason, "by": created_by,
+            })
+
+
+def unsnooze_reminder(vehicle_id: int, expiry_field: str) -> bool:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM reminder_snooze WHERE vehicle_id=%(vid)s AND expiry_field=%(field)s",
+                {"vid": vehicle_id, "field": expiry_field},
+            )
+            return cur.rowcount > 0
+
+
 def get_chat_context(user_id: str) -> dict:
     with _conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:

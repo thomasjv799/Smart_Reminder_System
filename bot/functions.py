@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from db import client as db
@@ -47,6 +47,48 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "snooze_reminder",
+            "description": (
+                "Snooze or permanently ignore cron reminders for a specific vehicle document. "
+                "Use when the user says they don't want reminders, plan to ignore renewal, "
+                "or want to pause alerts for a period. "
+                "To clear a snooze, call with mode='unsnooze'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "registration_number": {
+                        "type": "string",
+                        "description": "Vehicle registration number, e.g. KL04AS1371",
+                    },
+                    "field": {
+                        "type": "string",
+                        "enum": list(_FIELD_LABELS.keys()),
+                        "description": "Which document to snooze",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["ignore", "snooze_days", "unsnooze"],
+                        "description": (
+                            "ignore=permanent, snooze_days=snooze for N days, unsnooze=clear"
+                        ),
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of days to snooze (only for mode=snooze_days)",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional reason (e.g. 'vehicle sold', 'not renewing')",
+                    },
+                },
+                "required": ["registration_number", "field", "mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_vehicle_expiry",
             "description": (
                 "Update an expiry date on a vehicle. "
@@ -82,7 +124,35 @@ def dispatch(name: str, arguments: dict, user_id: str) -> str:
         return _query_vehicles(arguments)
     if name == "update_vehicle_expiry":
         return _update_vehicle_expiry(arguments)
+    if name == "snooze_reminder":
+        return _snooze_reminder(arguments, user_id)
     return f"Unknown tool: {name}"
+
+
+def _snooze_reminder(args: dict, user_id: str) -> str:
+    reg   = args["registration_number"]
+    field = args["field"]
+    mode  = args["mode"]
+    label = _FIELD_LABELS.get(field, field)
+
+    vehicles = db.get_vehicles_filtered("by_registration", value=reg)
+    if not vehicles:
+        return f"Vehicle {reg} not found."
+    vid = vehicles[0]["id"]
+
+    if mode == "unsnooze":
+        removed = db.unsnooze_reminder(vid, field)
+        return f"Snooze cleared for {label} on {reg}." if removed else f"No active snooze for {label} on {reg}."
+
+    until = None
+    if mode == "snooze_days":
+        days = args.get("days", 30)
+        until = date.today() + timedelta(days=days)
+
+    db.snooze_reminder(vid, field, until, args.get("reason", ""), user_id)
+    if until:
+        return f"Reminders for {label} on {reg} snoozed until {until}."
+    return f"Reminders for {label} on {reg} permanently ignored."
 
 
 def _query_vehicles(args: dict) -> str:

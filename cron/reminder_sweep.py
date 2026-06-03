@@ -9,7 +9,7 @@ from utils.notify import notify
 
 logger = logging.getLogger(__name__)
 
-PRE_OFFSETS  = [-30, -14, -7, -3, -1, 0]
+PRE_OFFSETS  = [-7, -3, -1, 0]
 POST_OFFSETS = [1, 3, 7, 15, 30]
 ALL_OFFSETS  = PRE_OFFSETS + POST_OFFSETS
 CATCH_UP_DAYS = 2
@@ -55,6 +55,8 @@ def sweep() -> int:
                 trigger_date = expiry + timedelta(days=offset)
                 in_window = trigger_date <= today <= trigger_date + timedelta(days=CATCH_UP_DAYS)
                 if not in_window:
+                    continue
+                if db.is_snoozed(v["id"], field):
                     continue
                 if db.reminder_already_sent(v["id"], field, expiry, offset):
                     continue
