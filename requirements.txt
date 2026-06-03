@@ -1,2 +1,11 @@
 psycopg2-binary
 requests
+python-telegram-bot>=20.0
+discord.py>=2.0
+groq
+langgraph
+langchain-core
+python-dotenv
+pytest
+pytest-mock
+requests-mock
