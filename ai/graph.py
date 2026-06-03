@@ -1,6 +1,9 @@
 import logging
+import os
 from typing import Literal, TypedDict
 
+from dotenv import load_dotenv
+from langfuse import Langfuse, get_client, observe
 from langgraph.graph import END, StateGraph
 
 from ai import get_provider
@@ -8,7 +11,15 @@ from bot.functions import TOOLS, dispatch
 from bot.message import Message
 from db.client import get_chat_context, save_turn, summarize_if_needed
 
+load_dotenv()
+
 logger = logging.getLogger(__name__)
+
+_langfuse = Langfuse(
+    secret_key=os.environ.get("LANGFUSE_SECRET_KEY"),
+    public_key=os.environ.get("LANGFUSE_PUBLIC_KEY"),
+    host=os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com"),
+)
 
 MAX_TOOL_ITERATIONS = 5
 
@@ -45,6 +56,7 @@ class GraphState(TypedDict):
     pending_tool_calls: list[dict]
 
 
+@observe()
 def load_memory(state: GraphState) -> GraphState:
     context = get_chat_context(state["user_id"])
     system = _SYSTEM_PROMPT
@@ -59,6 +71,7 @@ def load_memory(state: GraphState) -> GraphState:
     return {**state, "messages": messages}
 
 
+@observe(as_type="generation")
 def agent(state: GraphState) -> GraphState:
     provider = get_provider()
     has_tool_results = any(
@@ -67,6 +80,16 @@ def agent(state: GraphState) -> GraphState:
     )
     tools = [] if has_tool_results else TOOLS
     result = provider.chat_with_tools(state["messages"], tools)
+
+    usage = result.get("usage", {})
+    if usage:
+        get_client().update_current_generation(
+            usage_details={
+                "input": usage.get("input_tokens", 0),
+                "output": usage.get("output_tokens", 0),
+            }
+        )
+
     if "tool_calls" in result:
         return {**state, "pending_tool_calls": result["tool_calls"], "final_reply": ""}
     return {
@@ -76,6 +99,7 @@ def agent(state: GraphState) -> GraphState:
     }
 
 
+@observe()
 def execute_tools(state: GraphState) -> GraphState:
     if state["tool_iteration"] >= MAX_TOOL_ITERATIONS:
         return {
@@ -86,7 +110,9 @@ def execute_tools(state: GraphState) -> GraphState:
     results = []
     for tc in state["pending_tool_calls"]:
         try:
+            get_client().update_current_span(name=f"tool:{tc['name']}", input=tc.get("arguments"))
             r = dispatch(tc["name"], tc.get("arguments") or {}, state["user_id"])
+            get_client().update_current_span(output=r)
         except Exception as exc:
             r = f"Error in {tc['name']}: {exc}"
         results.append(r)
@@ -101,6 +127,7 @@ def execute_tools(state: GraphState) -> GraphState:
     }
 
 
+@observe()
 def save_memory(state: GraphState) -> GraphState:
     try:
         save_turn(state["user_id"], state["user_message"], state["final_reply"])
@@ -142,6 +169,7 @@ def _get_graph():
     return _graph
 
 
+@observe()
 def run_graph(msg: Message) -> str:
     state: GraphState = {
         "user_id": msg.user_id,
@@ -153,4 +181,10 @@ def run_graph(msg: Message) -> str:
         "final_reply": "",
         "pending_tool_calls": [],
     }
-    return _get_graph().invoke(state)["final_reply"]
+    try:
+        return _get_graph().invoke(state)["final_reply"]
+    finally:
+        try:
+            _langfuse.flush()
+        except Exception as exc:
+            logger.debug("Langfuse flush failed: %s", exc)
