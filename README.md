@@ -1,47 +1,99 @@
-# Smart Reminder System using Python and Twilio
+# Smart Reminder System
 
-## Overview
-The Smart Reminder System is a Python program that helps you, in this case keep track of your vehicle's important dates such as insurance and pollution expiry. It uses a Google Sheet as a database to store the vehicle details and other important dates and sends reminders through WhatsApp using Twilio API. You can easily modify the program to use other messaging platforms such as Telegram or SMS.
+A Python script that queries a self-hosted PostgreSQL database for upcoming vehicle
+document expirations and sends reminders via Telegram.
+
+## What it tracks
+
+| Field | Reminder threshold |
+|---|---|
+| Insurance | configurable (default 30 days) |
+| Pollution (PUCC) | same |
+| Fitness / RC validity | same |
+| MV Tax | same |
+| Permit (commercial vehicles) | same |
+
+It also catches items that expired within the last 7 days, in case the script missed a run.
+
+## Architecture
+
+```
+Postgres (vehicles table)
+        |
+    main.py
+        |
+   utils/notify.py  ──▶  Telegram
+                    ──▶  (other channels — extend notify.py)
+```
+
+Runs as a cron job on the same machine as the database — no Tailscale traversal needed.
 
 ## Prerequisites
-Before running the program, you need to have the following:
-- A Google account
-- A Google Sheet with the following columns: Name, Vehicle_No, Insurance_Due, Pollution. You can add more columns if you need to store additional information.
-- A Google Service Account to access the Google Sheet API.
-- A Twilio account with a WhatsApp sandbox to send messages. You need to get your account_sid and auth_token from the Twilio console.
 
-## Installation
-1. Clone this repository to your local machine.
-2. Install the required packages by running `pip install -r requirements.txt`.
-3. Place the JSON file containing your Google Service Account credentials in the root directory of the project. You can rename the file to `credentials.json` or use a different name and update the code accordingly.
-4. Update the `config.py` file with your Twilio account details and other configuration options.
-5. Inside the main.py you can run the smart_reminder function with all the necessary parameters to run the program.
+- Python 3.11+
+- A running PostgreSQL instance with the `vehicles` table (see [Master_DB_Postgres](https://github.com/thomasjv799/Master_DB_Postgres))
+- A Telegram bot token (create one via [@BotFather](https://t.me/BotFather))
+- Your Telegram chat ID (get it from [@userinfobot](https://t.me/userinfobot))
 
+## Setup
 
-![Google Sheet Structure](./img/gsheet.PNG)
+```bash
+git clone git@github.com:thomasjv799/Smart_Reminder_System.git
+cd Smart_Reminder_System
 
-## Usage
-1. Add your vehicle details to the Google Sheet with the correct column headers: Name, Vehicle_No, Insurance_Due, Pollution. You can add more rows as needed.
-2. Run the program to check for any upcoming deadlines. The program will send reminders for any deadlines that are within 7 days.
-3. Receive the reminders on your WhatsApp number and take necessary actions.
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
+cp .env.example .env
+# edit .env with your DATABASE_URI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+```
 
-![WhatsApp Message Example](./img/whtsapp.PNG)
+## Running
 
-## Customization
-You can customize the program to suit your needs by modifying the following:
-- The Google Sheet columns and row data.
-- The date format used in the Google Sheet.
-- The messaging platform and API used to send reminders.
-- The reminder threshold (default is 7 days).
+```bash
+source .venv/bin/activate
+python main.py
+```
 
-## Next Steps
-This project is the first phase. In the next phase, we plan to incorporate a feature to automatically retrieve vehicle and other bills through government public APIs and store them in a structured format of our choice, which can be further enhanced using our code. We also plan to develop a UI so that customers can easily submit their bills and receive reminders when they're due.
+Or with a different lookahead window:
+
+```bash
+REMINDER_DAYS=14 python main.py
+```
+
+## Scheduling (cron)
+
+Add to crontab (`crontab -e`) to run every morning at 8 AM:
+
+```cron
+0 8 * * * cd /path/to/Smart_Reminder_System && /path/to/.venv/bin/python main.py >> /var/log/vehicle-reminders.log 2>&1
+```
+
+## Environment variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_URI` | PostgreSQL connection string | required |
+| `TELEGRAM_BOT_TOKEN` | Token from @BotFather | required |
+| `TELEGRAM_CHAT_ID` | Target chat/group ID | required |
+| `REMINDER_DAYS` | Look-ahead window in days | `30` |
+
+## Adding notification channels
+
+`utils/notify.py` maps channel names to send functions. To add a new channel (e.g. WhatsApp):
+
+1. Add a `utils/whatsapp_.py` with a `send_whatsapp(message: str) -> None` function.
+2. Register it in `utils/notify.py`:
+   ```python
+   from utils.whatsapp_ import send_whatsapp
+   _CHANNELS = {
+       "telegram": send_telegram,
+       "whatsapp": send_whatsapp,
+   }
+   ```
+3. Call `notify(msg, channels=["telegram", "whatsapp"])` in `main.py`.
 
 ## License
-This project is licensed under the MIT License - see the `LICENSE` file for details.
 
-## Acknowledgments
-- `gspread` - Google Sheets Python API.
-- Twilio API - WhatsApp messaging API.
-- Python datetime - Date and time manipulation library.
+MIT — see `LICENSE.txt`.

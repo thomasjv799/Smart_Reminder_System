@@ -1,5 +1,2 @@
-gspread
-twilio
-datetime
-oauth2client
-pandas
+psycopg2-binary
+requests

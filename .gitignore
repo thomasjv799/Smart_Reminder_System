@@ -1,4 +1,4 @@
 __pycache__/
-
-config.ini
-ambient-mystery.json
+.env
+*.json
+*.ini
