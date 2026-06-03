@@ -23,11 +23,13 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         await update.message.chat.send_action("typing")
         reply = await asyncio.to_thread(run_graph, msg)
+        await update.message.reply_text(reply[:4096], parse_mode="HTML")
     except Exception as exc:
         logger.error("Telegram handler error: %s", exc, exc_info=True)
-        reply = f"⚠️ Error: {type(exc).__name__}: {exc}"
-
-    await update.message.reply_text(reply[:4096], parse_mode="HTML")
+        await update.message.reply_text(
+            f"⚠️ Something went wrong — please try again.",
+            parse_mode=None,
+        )
 
 
 def run_telegram() -> None:

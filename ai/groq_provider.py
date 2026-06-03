@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from groq import Groq
 
@@ -20,11 +21,31 @@ class GroqProvider(AIProvider):
         return response.choices[0].message.content
 
     def chat_with_tools(self, messages: list[dict], tools: list[dict]) -> dict:
-        response = self._client.chat.completions.create(
-            model=_MODEL,
-            messages=messages,
-            tools=tools if tools else None,
-        )
+        import groq as groq_module
+        try:
+            response = self._client.chat.completions.create(
+                model=_MODEL,
+                messages=messages,
+                tools=tools if tools else None,
+            )
+        except groq_module.BadRequestError as exc:
+            # Llama occasionally emits <function=name {...}> instead of proper JSON.
+            # Salvage the tool call rather than surfacing a raw error to the user.
+            body = getattr(exc, "body", {}) or {}
+            err = body.get("error", {})
+            if err.get("code") == "tool_use_failed":
+                failed = err.get("failed_generation", "")
+                match = re.search(r"<function=([a-zA-Z0-9_]+)\s*(.*)", failed)
+                if match:
+                    name = match.group(1)
+                    args_str = match.group(2).strip().rstrip("</function>").rstrip(">").strip()
+                    try:
+                        args = json.loads(args_str) if args_str else {}
+                        return {"tool_calls": [{"name": name, "arguments": args}], "usage": {}}
+                    except json.JSONDecodeError:
+                        pass
+            raise
+
         usage = {}
         if response.usage:
             usage = {
