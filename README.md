@@ -1,98 +1,141 @@
 # Smart Reminder System
 
-A Python script that queries a self-hosted PostgreSQL database for upcoming vehicle
-document expirations and sends reminders via Telegram.
+A self-hosted vehicle document expiry tracker. Sends escalating reminders via Telegram (and optionally Discord) before and after documents expire. Responds to natural language queries via an AI bot powered by Groq + LangGraph.
+
+---
 
 ## What it tracks
 
-| Field | Reminder threshold |
-|---|---|
-| Insurance | configurable (default 30 days) |
-| Pollution (PUCC) | same |
-| Fitness / RC validity | same |
-| MV Tax | same |
-| Permit (commercial vehicles) | same |
+Insurance, Pollution (PUCC), Fitness / RC validity, MV Tax, Permit — for every vehicle in the local Postgres `vehicles` table.
 
-It also catches items that expired within the last 7 days, in case the script missed a run.
+---
 
 ## Architecture
 
 ```
-Postgres (vehicles table)
-        |
-    main.py
-        |
-   utils/notify.py  ──▶  Telegram
-                    ──▶  (other channels — extend notify.py)
+Telegram / Discord DM
+        │
+   bot/message.py         platform-agnostic Message dataclass
+        │
+   ai/graph.py            LangGraph agent (Groq / Llama-3)
+    ├── load_memory        chat history from Postgres
+    ├── agent              tool calling
+    ├── execute_tools      query_vehicles, update_vehicle_expiry
+    └── save_memory        persist turn + rolling summarisation
+        │
+   db/client.py           psycopg2 — public schema (vehicles, reminder_log, etc.)
+
+cron/reminder_sweep.py    daily GitHub Actions job — escalating reminder schedule
+utils/notify.py           platform router — Telegram / Discord send
 ```
 
-Runs as a cron job on the same machine as the database — no Tailscale traversal needed.
+**Reminder schedule (per document, per vehicle):**
 
-## Prerequisites
+| Offset | When fired |
+|---|---|
+| −7, −3, −1, 0 days | Before expiry |
+| +1, +3, +7, +15, +30 days | After expiry (until renewed) |
 
-- Python 3.11+
-- A running PostgreSQL instance with the `vehicles` table (see [Master_DB_Postgres](https://github.com/thomasjv799/Master_DB_Postgres))
-- A Telegram bot token (create one via [@BotFather](https://t.me/BotFather))
-- Your Telegram chat ID (get it from [@userinfobot](https://t.me/userinfobot))
+Each `(vehicle, field, expiry_date, offset)` fires exactly once — tracked in `reminder_log`. Renewing a document resets the cycle automatically.
 
-## Setup
+**Platform routing:** A message from Telegram is always replied to on Telegram; Discord likewise. The `Message` dataclass in `bot/message.py` carries the platform so the agent never needs to know. Cron alerts go to whichever platform is set in `CRON_NOTIFY_PLATFORM`.
 
-```bash
-git clone git@github.com:thomasjv799/Smart_Reminder_System.git
-cd Smart_Reminder_System
+---
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+## Project structure
 
-cp .env.example .env
-# edit .env with your DATABASE_URI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+```
+ai/
+  base.py              AIProvider ABC
+  groq_provider.py     Groq / Llama-3 implementation
+  graph.py             LangGraph agent graph
+bot/
+  message.py           Platform-agnostic Message dataclass
+  telegram_bot.py      Telegram listener (python-telegram-bot)
+  discord_bot.py       Discord listener (discord.py)
+  functions.py         LangGraph tools: query_vehicles, update_vehicle_expiry
+cron/
+  reminder_sweep.py    Daily sweep — fires reminders, deduplicates via reminder_log
+db/
+  client.py            psycopg2 helpers (public schema — vehicles, reminder_log, etc.)
+utils/
+  notify.py            notify(msg, platform, chat_id) — Telegram / Discord send
+tests/                 pytest unit tests
+main.py                Entrypoint — starts Telegram + Discord bots in threads
 ```
 
-## Running
-
-```bash
-source .venv/bin/activate
-python main.py
-```
-
-Or with a different lookahead window:
-
-```bash
-REMINDER_DAYS=14 python main.py
-```
-
-## Scheduling (cron)
-
-Add to crontab (`crontab -e`) to run every morning at 8 AM:
-
-```cron
-0 8 * * * cd /path/to/Smart_Reminder_System && /path/to/.venv/bin/python main.py >> /var/log/vehicle-reminders.log 2>&1
-```
+---
 
 ## Environment variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `DATABASE_URI` | PostgreSQL connection string | required |
-| `TELEGRAM_BOT_TOKEN` | Token from @BotFather | required |
-| `TELEGRAM_CHAT_ID` | Target chat/group ID | required |
-| `REMINDER_DAYS` | Look-ahead window in days | `30` |
+| Variable | Description |
+|---|---|
+| `DATABASE_URI` | `postgresql://user:pass@localhost:5432/homelab` |
+| `TELEGRAM_BOT_TOKEN` | From @BotFather |
+| `TELEGRAM_CHAT_ID` | Your Telegram chat ID (for cron alerts) |
+| `DISCORD_BOT_TOKEN` | Optional — enables Discord bot listener |
+| `DISCORD_CHANNEL_ID` | Optional — Discord channel for cron alerts |
+| `GROQ_API_KEY` | From console.groq.com |
+| `AI_PROVIDER` | `groq` |
+| `CRON_NOTIFY_PLATFORM` | `telegram` or `discord` (where cron alerts go) |
+| `CRON_NOTIFY_CHAT_ID` | Override chat ID for cron (defaults to `TELEGRAM_CHAT_ID`) |
+
+---
+
+## GitHub Actions
+
+| Workflow | Schedule | Runner | What it does |
+|---|---|---|---|
+| Reminder Sweep | Daily 07:00 IST / 01:30 UTC | self-hosted | Runs `cron/reminder_sweep.py` — fires escalating reminders via Telegram |
+
+`workflow_dispatch` enabled for manual runs from the GitHub Actions UI.
+
+**GitHub secrets required:** `DATABASE_URI`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+---
+
+## Running locally
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # fill in credentials
+python main.py
+```
+
+Run the cron sweep manually:
+
+```bash
+python -m cron.reminder_sweep
+```
+
+Run tests:
+
+```bash
+pytest
+```
+
+---
+
+## Deployment
+
+Runs as a Docker container on the homelab Mac mini alongside the local Postgres DB.
+
+```bash
+docker build -t smart-reminder .
+docker run -d --name smart-reminder --restart unless-stopped \
+  --env-file .env --network host smart-reminder
+```
+
+`--network host` is required to reach local Postgres on port 5432.
+
+---
 
 ## Adding notification channels
 
-`utils/notify.py` maps channel names to send functions. To add a new channel (e.g. WhatsApp):
+Add a send function in `utils/` and register it in `utils/notify.py`'s `_CHANNELS` dict. The bot and cron both call `notify(msg, platform, chat_id)` — no other changes needed.
 
-1. Add a `utils/whatsapp_.py` with a `send_whatsapp(message: str) -> None` function.
-2. Register it in `utils/notify.py`:
-   ```python
-   from utils.whatsapp_ import send_whatsapp
-   _CHANNELS = {
-       "telegram": send_telegram,
-       "whatsapp": send_whatsapp,
-   }
-   ```
-3. Call `notify(msg, channels=["telegram", "whatsapp"])` in `main.py`.
+---
 
 ## License
 
